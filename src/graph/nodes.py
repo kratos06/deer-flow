@@ -11,7 +11,8 @@ from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from src.agents.agents import coder_agent, research_agent, create_agent
+from src.agents.agents import coder_agent, research_agent, financial_analyst_agent, create_agent
+from src.tracing import DeerFlowTracer, trace_agent
 
 from src.tools.search import LoggedTavilySearch
 from src.tools import (
@@ -32,6 +33,9 @@ from ..config import SEARCH_MAX_RESULTS
 
 logger = logging.getLogger(__name__)
 
+# Initialize the tracer
+tracer = DeerFlowTracer()
+
 
 @tool
 def handoff_to_planner(
@@ -43,13 +47,17 @@ def handoff_to_planner(
     # as a way for LLM to signal that it needs to hand off to planner agent
     return
 
-
+@trace_agent(tracer)
 def background_investigation_node(state: State) -> Command[Literal["planner"]]:
-
+    tracer.trace_event(name="background_investigation_start", metadata={"state": state})
     logger.info("background investigation node is running.")
+    
     searched_content = LoggedTavilySearch(max_results=SEARCH_MAX_RESULTS).invoke(
         {"query": state["messages"][-1].content}
     )
+    
+    tracer.trace_event(name="search_results", metadata={"results": searched_content})
+    
     background_investigation_results = None
     if isinstance(searched_content, list):
         background_investigation_results = [
@@ -58,7 +66,9 @@ def background_investigation_node(state: State) -> Command[Literal["planner"]]:
         ]
     else:
         logger.error(f"Tavily search returned malformed response: {searched_content}")
-    return Command(
+        tracer.trace_event(name="search_error", metadata={"error": "malformed_response", "response": searched_content})
+    
+    command = Command(
         update={
             "background_investigation_results": json.dumps(
                 background_investigation_results, ensure_ascii=False
@@ -66,16 +76,23 @@ def background_investigation_node(state: State) -> Command[Literal["planner"]]:
         },
         goto="planner",
     )
+    
+    tracer.trace_event(name="background_investigation_complete", metadata={"command": command})
+    return command
 
-
+@trace_agent(tracer)
 def planner_node(
     state: State, config: RunnableConfig
 ) -> Command[Literal["human_feedback", "reporter"]]:
     """Planner node that generate the full plan."""
+    tracer.trace_event(name="planner_start", metadata={"state": state})
     logger.info("Planner generating full plan")
+    
     configurable = Configuration.from_runnable_config(config)
     plan_iterations = state["plan_iterations"] if state.get("plan_iterations", 0) else 0
     messages = apply_prompt_template("planner", state, configurable)
+
+    tracer.trace_event(name="planner_messages", metadata={"messages": messages})
 
     if (
         plan_iterations == 0
@@ -103,6 +120,7 @@ def planner_node(
 
     # if the plan iterations is greater than the max plan iterations, return the reporter node
     if plan_iterations >= configurable.max_plan_iterations:
+        tracer.trace_event(name="max_iterations_reached", metadata={"iterations": plan_iterations})
         return Command(goto="reporter")
 
     full_response = ""
@@ -113,6 +131,8 @@ def planner_node(
         response = llm.stream(messages)
         for chunk in response:
             full_response += chunk.content
+            
+    tracer.trace_event(name="planner_response", metadata={"response": full_response})
     logger.debug(f"Current state messages: {state['messages']}")
     logger.info(f"Planner response: {full_response}")
 
@@ -120,41 +140,51 @@ def planner_node(
         curr_plan = json.loads(repair_json_output(full_response))
     except json.JSONDecodeError:
         logger.warning("Planner response is not a valid JSON")
+        tracer.trace_event(name="json_decode_error", metadata={"response": full_response})
         if plan_iterations > 0:
             return Command(goto="reporter")
         else:
             return Command(goto="__end__")
+            
     if curr_plan.get("has_enough_context"):
         logger.info("Planner response has enough context.")
         new_plan = Plan.model_validate(curr_plan)
-        return Command(
+        command = Command(
             update={
                 "messages": [AIMessage(content=full_response, name="planner")],
                 "current_plan": new_plan,
             },
             goto="reporter",
         )
-    return Command(
+        tracer.trace_event(name="planner_complete", metadata={"command": command})
+        return command
+        
+    command = Command(
         update={
             "messages": [AIMessage(content=full_response, name="planner")],
             "current_plan": full_response,
         },
         goto="human_feedback",
     )
+    tracer.trace_event(name="planner_complete", metadata={"command": command})
+    return command
 
 
+@trace_agent(tracer)
 def human_feedback_node(
     state,
 ) -> Command[Literal["planner", "research_team", "reporter", "__end__"]]:
+    tracer.trace_event(name="human_feedback_start", metadata={"state": state})
     current_plan = state.get("current_plan", "")
     # check if the plan is auto accepted
     auto_accepted_plan = state.get("auto_accepted_plan", False)
     if not auto_accepted_plan:
         feedback = interrupt("Please Review the Plan.")
+        tracer.trace_event(name="human_feedback", metadata={"feedback": feedback})
 
         # if the feedback is not accepted, return the planner node
         if feedback and str(feedback).upper().startswith("[EDIT_PLAN]"):
-            return Command(
+            command = Command(
                 update={
                     "messages": [
                         HumanMessage(content=feedback, name="feedback"),
@@ -162,10 +192,15 @@ def human_feedback_node(
                 },
                 goto="planner",
             )
+            tracer.trace_event(name="plan_edited", metadata={"command": command})
+            return command
         elif feedback and str(feedback).upper().startswith("[ACCEPTED]"):
             logger.info("Plan is accepted by user.")
+            tracer.trace_event(name="plan_accepted")
         else:
-            raise TypeError(f"Interrupt value of {feedback} is not supported.")
+            error = TypeError(f"Interrupt value of {feedback} is not supported.")
+            tracer.trace_event(name="feedback_error", metadata={"error": str(error)})
+            raise error
 
     # if the plan is accepted, run the following node
     plan_iterations = state["plan_iterations"] if state.get("plan_iterations", 0) else 0
@@ -180,12 +215,13 @@ def human_feedback_node(
             goto = "reporter"
     except json.JSONDecodeError:
         logger.warning("Planner response is not a valid JSON")
+        tracer.trace_event(name="json_decode_error", metadata={"plan": current_plan})
         if plan_iterations > 0:
             return Command(goto="reporter")
         else:
             return Command(goto="__end__")
 
-    return Command(
+    command = Command(
         update={
             "current_plan": Plan.model_validate(new_plan),
             "plan_iterations": plan_iterations,
@@ -193,12 +229,16 @@ def human_feedback_node(
         },
         goto=goto,
     )
+    tracer.trace_event(name="human_feedback_complete", metadata={"command": command})
+    return command
 
 
+@trace_agent(tracer)
 def coordinator_node(
     state: State,
 ) -> Command[Literal["planner", "background_investigator", "__end__"]]:
     """Coordinator node that communicate with customers."""
+    tracer.trace_event(name="coordinator_start", metadata={"state": state})
     logger.info("Coordinator talking.")
     messages = apply_prompt_template("coordinator", state)
     response = (
@@ -206,6 +246,7 @@ def coordinator_node(
         .bind_tools([handoff_to_planner])
         .invoke(messages)
     )
+    tracer.trace_event(name="coordinator_response", metadata={"response": response})
     logger.debug(f"Current state messages: {state['messages']}")
 
     goto = "__end__"
@@ -225,21 +266,42 @@ def coordinator_node(
                     break
         except Exception as e:
             logger.error(f"Error processing tool calls: {e}")
+            tracer.trace_event(name="tool_call_error", metadata={"error": str(e)})
     else:
         logger.warning(
             "Coordinator response contains no tool calls. Terminating workflow execution."
         )
         logger.debug(f"Coordinator response: {response}")
+        tracer.trace_event(name="no_tool_calls", metadata={"response": response})
 
-    return Command(
+    command = Command(
         update={"locale": locale},
         goto=goto,
     )
+    tracer.trace_event(name="coordinator_complete", metadata={"command": command})
+    return command
 
 
+@trace_agent(tracer)
 def reporter_node(state: State):
     """Reporter node that write a final report."""
+    tracer.trace_event(name="reporter_start", metadata={"state": state})
     logger.info("Reporter write final report")
+    tracer.trace_event(name="reporter_node", metadata={"state": state})
+    messages = state.get("messages", [])
+    current_plan = state.get("current_plan")
+    observations = state.get("observations", [])
+    locale = state.get("locale", "en-US")
+
+    tracer.trace_event(
+        name="reporter_input",
+        metadata={
+            "messages": messages,
+            "current_plan": current_plan.model_dump() if current_plan else None,
+            "observations": observations,
+            "locale": locale
+        }
+    )
     current_plan = state.get("current_plan")
     input_ = {
         "messages": [
@@ -271,14 +333,19 @@ def reporter_node(state: State):
     response = get_llm_by_type(AGENT_LLM_MAP["reporter"]).invoke(invoke_messages)
     response_content = response.content
     logger.info(f"reporter response: {response_content}")
+    tracer.trace_event(name="reporter_response", metadata={"response": response_content})
 
-    return {"final_report": response_content}
+    result = {"final_report": response_content}
+    tracer.trace_event(name="reporter_complete", metadata={"result": result})
+    return result
 
 
+@trace_agent(tracer)
 def research_team_node(
     state: State,
-) -> Command[Literal["planner", "researcher", "coder"]]:
+) -> Command[Literal["planner", "researcher", "coder", "financial_analyst"]]:
     """Research team node that collaborates on tasks."""
+    tracer.trace_event(name="research_team_start", metadata={"state": state})
     logger.info("Research team is collaborating on tasks.")
     current_plan = state.get("current_plan")
     if not current_plan or not current_plan.steps:
@@ -288,17 +355,33 @@ def research_team_node(
     for step in current_plan.steps:
         if not step.execution_res:
             break
-    if step.step_type and step.step_type == StepType.RESEARCH:
-        return Command(goto="researcher")
-    if step.step_type and step.step_type == StepType.PROCESSING:
-        return Command(goto="coder")
-    return Command(goto="planner")
+    
+    # Log the step type to aid in debugging
+    logger.info(f"Processing step: {step.title} with type: {step.step_type}")
+    
+    if step.step_type == StepType.FINANCIAL_ANALYSIS:
+        logger.info("Routing to financial analyst")
+        command = Command(goto="financial_analyst")
+    elif step.step_type == StepType.RESEARCH:
+        logger.info("Routing to researcher")
+        command = Command(goto="researcher")
+    elif step.step_type == StepType.PROCESSING:
+        logger.info("Routing to coder")
+        command = Command(goto="coder")
+    else:
+        logger.warning(f"Unknown step type: {step.step_type}, routing to planner")
+        command = Command(goto="planner")
+        
+    tracer.trace_event(name="research_team_complete", metadata={"command": command})
+    return command
 
 
+@trace_agent(tracer)
 async def _execute_agent_step(
     state: State, agent, agent_name: str
 ) -> Command[Literal["research_team"]]:
     """Helper function to execute a step using the specified agent."""
+    tracer.trace_event(name="execute_agent_step_start", metadata={"state": state, "agent": agent_name})
     current_plan = state.get("current_plan")
     observations = state.get("observations", [])
 
@@ -308,6 +391,7 @@ async def _execute_agent_step(
             break
 
     logger.info(f"Executing step: {step.title}")
+    tracer.trace_event(name="executing_step", metadata={"step": step.title})
 
     # Prepare the input for the agent
     agent_input = {
@@ -329,6 +413,7 @@ async def _execute_agent_step(
 
     # Invoke the agent
     result = await agent.ainvoke(input=agent_input)
+    tracer.trace_event(name="agent_result", metadata={"result": result})
 
     # Process the result
     response_content = result["messages"][-1].content
@@ -338,7 +423,7 @@ async def _execute_agent_step(
     step.execution_res = response_content
     logger.info(f"Step '{step.title}' execution completed by {agent_name}")
 
-    return Command(
+    command = Command(
         update={
             "messages": [
                 HumanMessage(
@@ -350,8 +435,12 @@ async def _execute_agent_step(
         },
         goto="research_team",
     )
+    
+    tracer.trace_event(name="execute_agent_step_complete", metadata={"command": command})
+    return command
 
 
+@trace_agent(tracer)
 async def _setup_and_execute_agent_step(
     state: State,
     config: RunnableConfig,
@@ -376,6 +465,21 @@ async def _setup_and_execute_agent_step(
     Returns:
         Command to update state and go to research_team
     """
+    def get_tool_name(tool):
+        """Get a string representation of the tool name"""
+        if hasattr(tool, "__name__"):
+            return tool.__name__
+        elif hasattr(tool, "name"):
+            return tool.name
+        else:
+            return str(tool)
+            
+    tracer.trace_event(name="setup_agent_start", metadata={
+        "state": state,
+        "agent_type": agent_type,
+        "default_tools": [get_tool_name(tool) for tool in default_tools]
+    })
+    
     configurable = Configuration.from_runnable_config(config)
     mcp_servers = {}
     enabled_tools = {}
@@ -395,6 +499,11 @@ async def _setup_and_execute_agent_step(
                 for tool_name in server_config["enabled_tools"]:
                     enabled_tools[tool_name] = server_name
 
+    tracer.trace_event(name="mcp_configuration", metadata={
+        "mcp_servers": mcp_servers,
+        "enabled_tools": enabled_tools
+    })
+
     # Create and execute agent with MCP tools if available
     if mcp_servers:
         async with MultiServerMCPClient(mcp_servers) as client:
@@ -406,35 +515,73 @@ async def _setup_and_execute_agent_step(
                     )
                     loaded_tools.append(tool)
             agent = create_agent(agent_type, agent_type, loaded_tools, agent_type)
+            tracer.trace_event(name="agent_created", metadata={
+                "agent_type": agent_type,
+                "tools": [get_tool_name(tool) for tool in loaded_tools]
+            })
             return await _execute_agent_step(state, agent, agent_type)
     else:
         # Use default agent if no MCP servers are configured
+        tracer.trace_event(name="using_default_agent", metadata={"agent_type": agent_type})
         return await _execute_agent_step(state, default_agent, agent_type)
 
 
+@trace_agent(tracer)
 async def researcher_node(
     state: State, config: RunnableConfig
 ) -> Command[Literal["research_team"]]:
     """Researcher node that do research"""
+    tracer.trace_event(name="researcher_node_start", metadata={"state": state})
     logger.info("Researcher node is researching.")
-    return await _setup_and_execute_agent_step(
+    result = await _setup_and_execute_agent_step(
         state,
         config,
         "researcher",
         research_agent,
         [web_search_tool, crawl_tool],
     )
+    tracer.trace_event(name="researcher_node_complete", metadata={"result": result})
+    return result
 
 
+@trace_agent(tracer)
 async def coder_node(
     state: State, config: RunnableConfig
 ) -> Command[Literal["research_team"]]:
-    """Coder node that do code analysis."""
-    logger.info("Coder node is coding.")
+    """Coder node that executes code and math tasks."""
+    tracer.trace_event(name="coder_start", metadata={"state": state})
+    logger.info("Coder agent is working...")
     return await _setup_and_execute_agent_step(
-        state,
-        config,
-        "coder",
-        coder_agent,
-        [python_repl_tool],
+        state, config, "coder", coder_agent, [python_repl_tool]
+    )
+
+
+@trace_agent(tracer)
+async def financial_analyst_node(
+    state: State, config: RunnableConfig
+) -> Command[Literal["research_team"]]:
+    """Financial analyst node that performs financial data analysis."""
+    tracer.trace_event(name="financial_analyst_start", metadata={"state": state})
+    logger.info("Financial analyst agent is working...")
+    # Import finance tools here to avoid circular imports
+    from src.tools import (
+        get_stock_info_tool,
+        get_stock_price_tool,
+        get_financial_report_tool,
+        analyze_financials_tool,
+        get_technical_indicators_tool,
+        get_investment_recommendation_tool,
+    )
+    
+    finance_tools = [
+        get_stock_info_tool,
+        get_stock_price_tool,
+        get_financial_report_tool,
+        analyze_financials_tool,
+        get_technical_indicators_tool,
+        get_investment_recommendation_tool,
+    ]
+    
+    return await _setup_and_execute_agent_step(
+        state, config, "financial_analyst", financial_analyst_agent, finance_tools
     )

@@ -1,0 +1,19 @@
+# DeerFlow当前任务
+
+## 任务ID: MB-001
+## 任务名称: 启用Memory Bank
+
+### 任务描述
+在DeerFlow项目中启用Memory Bank功能，以便提高开发效率和项目上下文管理能力。
+
+### 任务步骤
+1. [x] 创建memory-bank目录
+2. [x] 初始化核心Memory Bank文件
+3. [x] 填充基本内容
+4. [ ] 在Cursor中设置自定义模式
+5. [ ] 测试Memory Bank功能
+
+### 实施计划
+1. 完成所有Memory Bank核心文件的内容填充
+2. 在Cursor中配置VAN, PLAN, CREATIVE, IMPLEMENT等自定义模式
+3. 测试各模式下Memory Bank的功能

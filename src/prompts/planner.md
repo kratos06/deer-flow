@@ -71,6 +71,13 @@ Different types of steps have different web search requirements:
    - Mathematical calculations and analysis
    - Statistical computations and data processing
 
+3. **Financial Analysis Steps** (`need_web_search: true, step_type: "financial_analysis"`):
+   - Stock market analysis (especially Chinese A-shares and Hong Kong stocks)
+   - Company financial statement analysis
+   - Calculation of financial ratios and metrics
+   - Technical indicator analysis
+   - Investment recommendations and valuation
+
 ## Exclusions
 
 - **No Direct Calculations in Research Steps**:
@@ -159,7 +166,7 @@ interface Step {
   need_web_search: boolean;  // Must be explicitly set for each step
   title: string;
   description: string;  // Specify exactly what data to collect
-  step_type: "research" | "processing";  // Indicates the nature of the step
+  step_type: "research" | "processing" | "financial_analysis";  // Indicates the nature of the step
 }
 
 interface Plan {
@@ -182,5 +189,6 @@ interface Plan {
 - Carefully assess each step's web search requirement based on its nature:
     - Research steps (`need_web_search: true`) for gathering information
     - Processing steps (`need_web_search: false`) for calculations and data processing
+    - Financial analysis steps (`need_web_search: true`) for stock market, financial data analysis, and investment recommendations
 - Default to gathering more information unless the strictest sufficient context criteria are met
 - Always use the language specified by the locale = **{{ locale }}**.

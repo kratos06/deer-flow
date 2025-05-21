@@ -12,6 +12,15 @@ from .search import (
     arxiv_search_tool,
 )
 from .tts import VolcengineTTS
+from .finance import (
+    get_stock_info_tool,
+    get_stock_price_tool,
+    get_financial_report_tool,
+    analyze_financials_tool,
+    get_technical_indicators_tool,
+    get_investment_recommendation_tool,
+    finance_tools_list
+)
 from src.config import SELECTED_SEARCH_ENGINE, SearchEngine
 
 # Map search engine names to their respective tools
@@ -29,4 +38,11 @@ __all__ = [
     "web_search_tool",
     "python_repl_tool",
     "VolcengineTTS",
+    "get_stock_info_tool",
+    "get_stock_price_tool",
+    "get_financial_report_tool",
+    "analyze_financials_tool",
+    "get_technical_indicators_tool",
+    "get_investment_recommendation_tool",
+    "finance_tools_list"
 ]

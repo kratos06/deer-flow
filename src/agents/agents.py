@@ -8,6 +8,12 @@ from src.tools import (
     crawl_tool,
     python_repl_tool,
     web_search_tool,
+    get_stock_info_tool,
+    get_stock_price_tool,
+    get_financial_report_tool,
+    analyze_financials_tool,
+    get_technical_indicators_tool,
+    get_investment_recommendation_tool,
 )
 
 from src.llms.llm import get_llm_by_type
@@ -30,3 +36,16 @@ research_agent = create_agent(
     "researcher", "researcher", [web_search_tool, crawl_tool], "researcher"
 )
 coder_agent = create_agent("coder", "coder", [python_repl_tool], "coder")
+financial_analyst_agent = create_agent(
+    "financial_analyst", 
+    "financial_analyst", 
+    [
+        get_stock_info_tool,
+        get_stock_price_tool,
+        get_financial_report_tool,
+        analyze_financials_tool,
+        get_technical_indicators_tool,
+        get_investment_recommendation_tool,
+    ], 
+    "financial_analyst"
+)

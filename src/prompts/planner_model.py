@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 class StepType(str, Enum):
     RESEARCH = "research"
     PROCESSING = "processing"
+    FINANCIAL_ANALYSIS = "financial_analysis"
 
 
 class Step(BaseModel):
@@ -53,6 +54,23 @@ class Plan(BaseModel):
                                 "Collect data on market size, growth rates, major players, and investment trends in AI sector."
                             ),
                             "step_type": "research",
+                        }
+                    ],
+                },
+                {
+                    "has_enough_context": False,
+                    "thought": (
+                        "To analyze the financial status and investment value of Tencent, we need detailed financial data and market analysis."
+                    ),
+                    "title": "Tencent Financial Analysis Plan",
+                    "steps": [
+                        {
+                            "need_web_search": True,
+                            "title": "Tencent Financial Statement Analysis",
+                            "description": (
+                                "Analyze Tencent's financial statements, including balance sheet, income statement, and cash flow statement. Calculate key financial ratios and trends."
+                            ),
+                            "step_type": "financial_analysis",
                         }
                     ],
                 }

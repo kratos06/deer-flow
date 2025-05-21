@@ -34,6 +34,18 @@ TEAM_MEMBER_CONFIGRATIONS = {
         ),
         "is_optional": True,
     },
+    "financial_analyst": {
+        "name": "financial_analyst",
+        "desc": (
+            "Responsible for financial data analysis, stock evaluation, and investment recommendations"
+        ),
+        "desc_for_llm": (
+            "Accesses financial data for Chinese stocks (A-shares and Hong Kong), analyzes financial statements, "
+            "calculates financial ratios, evaluates technical indicators, and provides investment recommendations. "
+            "Outputs a comprehensive financial analysis report in Markdown format."
+        ),
+        "is_optional": True,
+    },
 }
 
 TEAM_MEMBERS = list(TEAM_MEMBER_CONFIGRATIONS.keys())

@@ -1,0 +1,1 @@
+VAN 模式测试成功！Memory Bank 模式系统工作正常。

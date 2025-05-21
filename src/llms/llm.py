@@ -47,8 +47,10 @@ def get_llm_by_type(
 # Initialize LLMs for different purposes - now these will be cached
 basic_llm = get_llm_by_type("basic")
 
-# In the future, we will use reasoning_llm and vl_llm for different purposes
-# reasoning_llm = get_llm_by_type("reasoning")
+# Initialize the reasoning LLM for financial analysis
+reasoning_llm = get_llm_by_type("reasoning")
+
+# In the future, we will use vl_llm for vision tasks
 # vl_llm = get_llm_by_type("vision")
 
 
