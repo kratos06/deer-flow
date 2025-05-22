@@ -5,12 +5,7 @@ import os
 
 from .crawl import crawl_tool
 from .python_repl import python_repl_tool
-from .search import (
-    tavily_search_tool,
-    duckduckgo_search_tool,
-    brave_search_tool,
-    arxiv_search_tool,
-)
+from .search import get_web_search_tool
 from .tts import VolcengineTTS
 from .finance import (
     get_stock_info_tool,
@@ -35,8 +30,8 @@ web_search_tool = search_tool_mappings.get(SELECTED_SEARCH_ENGINE, tavily_search
 
 __all__ = [
     "crawl_tool",
-    "web_search_tool",
     "python_repl_tool",
+    "get_web_search_tool",
     "VolcengineTTS",
     "get_stock_info_tool",
     "get_stock_price_tool",

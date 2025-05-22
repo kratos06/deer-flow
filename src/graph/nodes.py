@@ -3,6 +3,7 @@
 
 import json
 import logging
+import os
 from typing import Annotated, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -17,7 +18,7 @@ from src.tracing import DeerFlowTracer, trace_agent
 from src.tools.search import LoggedTavilySearch
 from src.tools import (
     crawl_tool,
-    web_search_tool,
+    get_web_search_tool,
     python_repl_tool,
 )
 
@@ -29,7 +30,7 @@ from src.prompts.template import apply_prompt_template
 from src.utils.json_utils import repair_json_output
 
 from .types import State
-from ..config import SEARCH_MAX_RESULTS
+from ..config import SELECTED_SEARCH_ENGINE, SearchEngine
 
 logger = logging.getLogger(__name__)
 
@@ -386,18 +387,21 @@ async def _execute_agent_step(
     observations = state.get("observations", [])
 
     # Find the first unexecuted step
+    current_step = None
+    completed_steps = []
     for step in current_plan.steps:
         if not step.execution_res:
+            current_step = step
             break
 
     logger.info(f"Executing step: {step.title}")
     tracer.trace_event(name="executing_step", metadata={"step": step.title})
 
-    # Prepare the input for the agent
+    # Prepare the input for the agent with completed steps info
     agent_input = {
         "messages": [
             HumanMessage(
-                content=f"#Task\n\n##title\n\n{step.title}\n\n##description\n\n{step.description}\n\n##locale\n\n{state.get('locale', 'en-US')}"
+                content=f"{completed_steps_info}# Current Task\n\n## Title\n\n{current_step.title}\n\n## Description\n\n{current_step.description}\n\n## Locale\n\n{state.get('locale', 'en-US')}"
             )
         ]
     }
@@ -420,8 +424,8 @@ async def _execute_agent_step(
     logger.debug(f"{agent_name.capitalize()} full response: {response_content}")
 
     # Update the step with the execution result
-    step.execution_res = response_content
-    logger.info(f"Step '{step.title}' execution completed by {agent_name}")
+    current_step.execution_res = response_content
+    logger.info(f"Step '{current_step.title}' execution completed by {agent_name}")
 
     command = Command(
         update={
@@ -445,7 +449,6 @@ async def _setup_and_execute_agent_step(
     state: State,
     config: RunnableConfig,
     agent_type: str,
-    default_agent,
     default_tools: list,
 ) -> Command[Literal["research_team"]]:
     """Helper function to set up an agent with appropriate tools and execute a step.
@@ -459,7 +462,6 @@ async def _setup_and_execute_agent_step(
         state: The current state
         config: The runnable config
         agent_type: The type of agent ("researcher" or "coder")
-        default_agent: The default agent to use if no MCP servers are configured
         default_tools: The default tools to add to the agent
 
     Returns:
@@ -537,8 +539,7 @@ async def researcher_node(
         state,
         config,
         "researcher",
-        research_agent,
-        [web_search_tool, crawl_tool],
+        [get_web_search_tool(configurable.max_search_results), crawl_tool],
     )
     tracer.trace_event(name="researcher_node_complete", metadata={"result": result})
     return result
